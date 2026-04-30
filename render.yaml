@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: aut-chat-with-kaggle-data
+    env: python
+    plan: free
+    buildCommand: |
+      pip install -r backend/requirements.txt
+      cd frontend && npm install && npm run build
+    startCommand: |
+      cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENROUTER_MODEL
+        value: openai/gpt-4o-mini
+      - key: DATABASE_PATH
+        value: data.db
