@@ -42,7 +42,12 @@ Important rules:
 - Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, or multiple statements.
 - Use SUM(enrolled) when aggregating student numbers.
 - Use clear aliases such as total_students.
+- If the user asks for "by year", "per year", "yearly", "over time", or "last 5 years", year must be the primary grouping column.
 - If the user asks for "last 5 years", use year >= 2019 because this dataset covers multiple terms up to 2023.
+- A programme name such as Economics, Computer Science, Biology, Mathematics, English, or Business should be used as a WHERE filter. It must not override a requested year grouping.
+- Only group by programme when the user asks for a programme/program/department comparison or says "by programme", "by program", or "by department".
+- Only group by faculty when the user asks for a faculty/division comparison or says "by faculty" or "by division".
+- Only group by student_category when the user asks for a category comparison or says "by category".
 - If the user asks about Business and there is no exact Business programme, use programme = 'Economics' as the closest business-related department in this dataset.
 - If the user asks about international students, filter student_origin = 'International'.
 - If the user asks about domestic students, filter student_origin = 'Domestic'.
@@ -69,19 +74,39 @@ def fallback_generate(question: str) -> dict[str, Any]:
     q = question.lower()
 
     where = []
+    selected_programme = None
+    selected_category = None
+    by_year = any(phrase in q for phrase in ["by year", "per year", "yearly", "over time", "trend", "last 5", "last five", "five years"])
+    last_five_years = "last 5" in q or "last five" in q or "five years" in q
+    wants_origin_breakdown = ("domestic" in q and "international" in q) or "origin" in q
+    wants_faculty_breakdown = "by faculty" in q or "by division" in q or ("faculty" in q and not by_year)
+    wants_programme_breakdown = (
+        "by programme" in q
+        or "by program" in q
+        or "by department" in q
+        or "programmes" in q
+        or "programs" in q
+        or ("programme" in q and not by_year)
+        or ("program" in q and not by_year)
+        or ("department" in q and not by_year)
+    )
+    wants_category_breakdown = "by category" in q or ("category" in q and not by_year)
 
     if "business" in q or "economics" in q:
-        where.append("programme = 'Economics'")
+        selected_programme = "Economics"
     if "computer" in q or "cosc" in q:
-        where.append("programme = 'Computer Science'")
+        selected_programme = "Computer Science"
     if "biology" in q or "biol" in q:
-        where.append("programme = 'Biology'")
+        selected_programme = "Biology"
     if "math" in q:
-        where.append("programme = 'Mathematics'")
+        selected_programme = "Mathematics"
     if "english" in q:
-        where.append("programme = 'English'")
+        selected_programme = "English"
     if "law" in q:
-        where.append("programme = 'Political Science'")
+        selected_programme = "Political Science"
+
+    if selected_programme:
+        where.append(f"programme = '{selected_programme}'")
 
     if "international" in q and "domestic" not in q:
         where.append("student_origin = 'International'")
@@ -89,30 +114,56 @@ def fallback_generate(question: str) -> dict[str, Any]:
         where.append("student_origin = 'Domestic'")
 
     if "freshman" in q:
-        where.append("student_category = 'Freshman'")
+        selected_category = "Freshman"
     if "sophomore" in q:
-        where.append("student_category = 'Sophomore'")
+        selected_category = "Sophomore"
     if "junior" in q:
-        where.append("student_category = 'Junior'")
+        selected_category = "Junior"
     if "senior" in q:
-        where.append("student_category = 'Senior'")
+        selected_category = "Senior"
 
-    if "last 5" in q or "five" in q:
+    if selected_category:
+        where.append(f"student_category = '{selected_category}'")
+
+    if last_five_years:
         where.append("year >= 2019")
 
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
 
-    if ("domestic" in q and "international" in q) or "origin" in q:
+    if by_year:
+        dimensions = ["year"]
+        if wants_origin_breakdown:
+            dimensions.append("student_origin")
+        if wants_faculty_breakdown:
+            dimensions.append("faculty")
+        if wants_programme_breakdown and not selected_programme:
+            dimensions.append("programme")
+        if wants_category_breakdown and not selected_category:
+            dimensions.append("student_category")
+
+        select_columns = ", ".join(dimensions)
+        group_columns = ", ".join(dimensions)
+        order_columns = ", ".join(dimensions)
         sql = f"""
-        SELECT year, student_origin, SUM(enrolled) AS total_students
+        SELECT {select_columns}, SUM(enrolled) AS total_students
         FROM enrolment_summary
         {where_clause}
-        GROUP BY year, student_origin
-        ORDER BY year, student_origin
+        GROUP BY {group_columns}
+        ORDER BY {order_columns}
         """
-        return {"sql": " ".join(sql.split()), "chart": {"type": "bar", "x": "year", "y": "total_students"}}
+        return {"sql": " ".join(sql.split()), "chart": {"type": "line", "x": "year", "y": "total_students"}}
 
-    if "faculty" in q or "division" in q:
+    if wants_origin_breakdown:
+        sql = f"""
+        SELECT student_origin, SUM(enrolled) AS total_students
+        FROM enrolment_summary
+        {where_clause}
+        GROUP BY student_origin
+        ORDER BY student_origin
+        """
+        return {"sql": " ".join(sql.split()), "chart": {"type": "bar", "x": "student_origin", "y": "total_students"}}
+
+    if wants_faculty_breakdown:
         sql = f"""
         SELECT faculty, SUM(enrolled) AS total_students
         FROM enrolment_summary
@@ -122,7 +173,7 @@ def fallback_generate(question: str) -> dict[str, Any]:
         """
         return {"sql": " ".join(sql.split()), "chart": {"type": "bar", "x": "faculty", "y": "total_students"}}
 
-    if "programme" in q or "program" in q or "department" in q:
+    if wants_programme_breakdown and not selected_programme:
         sql = f"""
         SELECT programme, SUM(enrolled) AS total_students
         FROM enrolment_summary
@@ -133,7 +184,7 @@ def fallback_generate(question: str) -> dict[str, Any]:
         """
         return {"sql": " ".join(sql.split()), "chart": {"type": "bar", "x": "programme", "y": "total_students"}}
 
-    if "category" in q or "freshman" in q or "sophomore" in q or "junior" in q or "senior" in q:
+    if wants_category_breakdown and not selected_category:
         sql = f"""
         SELECT student_category, SUM(enrolled) AS total_students
         FROM enrolment_summary
@@ -158,7 +209,13 @@ def extract_json(text: str) -> dict[str, Any]:
     text = re.sub(r"^```json\s*", "", text)
     text = re.sub(r"^```\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
 
 
 def generate_sql_from_question(question: str) -> dict[str, Any]:
@@ -171,16 +228,26 @@ def generate_sql_from_question(question: str) -> dict[str, Any]:
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
+        timeout=20.0,
     )
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SCHEMA_DESCRIPTION},
-            {"role": "user", "content": question},
-        ],
-        temperature=0,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SCHEMA_DESCRIPTION},
+                {"role": "user", "content": question},
+            ],
+            temperature=0,
+        )
 
-    content = response.choices[0].message.content or ""
-    return extract_json(content)
+        content = response.choices[0].message.content or ""
+        parsed = extract_json(content)
+        if not isinstance(parsed.get("sql"), str):
+            return fallback_generate(question)
+        if not isinstance(parsed.get("chart"), dict):
+            parsed["chart"] = {}
+        return parsed
+    except Exception as exc:
+        print(f"OpenRouter request failed, using local fallback: {exc}")
+        return fallback_generate(question)
